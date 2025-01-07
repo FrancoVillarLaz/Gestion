@@ -17,6 +17,7 @@ import org.apache.commons.csv.CSVRecord;
 import org.springframework.stereotype.Service;
 
 import java.io.*;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -62,7 +63,21 @@ public class TramiteService {
                     if (fecha == null || fecha.isEmpty()) {
                         throw new IllegalArgumentException("Fecha vacía o nula en la fila: " + registro.getRecordNumber());
                     }
-                    LocalDateTime fechaFormateada = LocalDateTime.parse(fecha, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+
+                    LocalDateTime fechaFormateada;
+                    try {
+                        // Intentar con formato completo (con hora)
+                        DateTimeFormatter formatoCompleto = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+                        fechaFormateada = LocalDateTime.parse(fecha, formatoCompleto);
+                    } catch (Exception e) {
+                        try {
+                            // Intentar con formato simplificado (sin hora)
+                            DateTimeFormatter formatoSimplificado = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+                            fechaFormateada = LocalDate.parse(fecha, formatoSimplificado).atStartOfDay();
+                        } catch (Exception e2) {
+                            throw new IllegalArgumentException("Formato de fecha inválido en la fila: " + registro.getRecordNumber() + " - Valor: " + fecha);
+                        }
+                    }
                     LocalDateTime fechaConsulta = LocalDateTime.now();
 
                     String compania = registro.get("compania");
