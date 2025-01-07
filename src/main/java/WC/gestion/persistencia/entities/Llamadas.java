@@ -33,12 +33,12 @@ public class Llamadas {
     private Integer duracion;
 
     @ManyToOne
-    @JoinColumn(name = "tipo_origen")
+    @JoinColumn(name = "origen_corte")
     @JsonManagedReference
     private TipoOrigen tipoOrigen;
 
     @ManyToOne
-    @JoinColumn(name = "tipo_terminacion")
+    @JoinColumn(name = "causa_terminacion")
     @JsonManagedReference
     private CausaTerminacion causaTerminacion;
 }

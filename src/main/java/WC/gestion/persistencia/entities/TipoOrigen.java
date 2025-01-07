@@ -21,7 +21,7 @@ public class TipoOrigen {
     @Column(name = "tipo_origen")
     private String tipoOrigen;
 
-    @OneToMany(mappedBy = "origen_corte")
+    @OneToMany(mappedBy = "tipoOrigen")
     @JsonBackReference
     private List<Llamadas> llamada;
 }

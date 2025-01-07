@@ -22,7 +22,7 @@ public class CausaTerminacion {
     @Column(name = "tipo_terminacion")
     private String tipoTerminacion;
 
-    @OneToMany(mappedBy = "causa_terminacion")
+    @OneToMany(mappedBy = "causaTerminacion")
     @JsonBackReference
     private List<Llamadas> llamada;
 }
