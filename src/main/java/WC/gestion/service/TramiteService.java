@@ -24,8 +24,11 @@ import java.util.ArrayList;
 import java.util.List;
 import WC.gestion.persistencia.entities.*;
 import java.util.Optional;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static WC.gestion.util.MapUtil.*;
 
@@ -47,23 +50,20 @@ public class TramiteService {
     @Transactional
     public void agregarTramitesDesdeCsv(InputStream inputStream) throws IOException {
         List<TramiteDTO> tramitesDto = new ArrayList<>();
-        List<String> errores = new ArrayList<>();
-        int batchSize = 500_000; // Tamaño de lote
+        Queue<String> errores = new ConcurrentLinkedQueue<>();
+        int batchSize = 500_000;
+        ExecutorService executorService = Executors.newFixedThreadPool(12);
 
-        // Leer el archivo CSV y dividir en lotes
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, "UTF-8"));
-             CSVParser parser = new CSVParser(reader, CSVFormat.DEFAULT
-                     .withDelimiter(';').withFirstRecordAsHeader())) {
+             CSVParser parser = new CSVParser(reader, CSVFormat.DEFAULT.withDelimiter(';').withFirstRecordAsHeader())) {
 
             for (CSVRecord registro : parser) {
                 try {
-                    // Validar y procesar cada registro
                     TramiteDTO tramiteDto = procesarRegistro(registro);
                     tramitesDto.add(tramiteDto);
 
-                    // Si el lote alcanza el tamaño definido, procesarlo
                     if (tramitesDto.size() == batchSize) {
-                        procesarLoteEnHilo(tramitesDto, errores);
+                        enviarLoteAProcesar(tramitesDto, errores, executorService);
                         tramitesDto.clear();
                     }
                 } catch (Exception e) {
@@ -71,18 +71,52 @@ public class TramiteService {
                 }
             }
 
-            // Procesar el último lote si no está vacío
             if (!tramitesDto.isEmpty()) {
-                procesarLoteEnHilo(tramitesDto, errores);
+                enviarLoteAProcesar(tramitesDto, errores, executorService);
             }
-        }
 
-        // Mostrar errores al final
-        if (!errores.isEmpty()) {
-            System.out.println("Errores detectados durante la carga del CSV:");
-            errores.forEach(System.out::println);
+            executorService.shutdown();
+            if (!executorService.awaitTermination(60, TimeUnit.MINUTES)) {
+                executorService.shutdownNow();
+            }
+
+            if (!errores.isEmpty()) {
+                guardarErroresEnArchivo(errores);
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Error procesando el archivo CSV", e);
         }
     }
+
+    private void enviarLoteAProcesar(List<TramiteDTO> lote, Queue<String> errores, ExecutorService executorService) {
+        executorService.submit(() -> {
+            try {
+                guardarLote(lote);
+            } catch (Exception e) {
+                errores.add("Error procesando lote: " + e.getMessage());
+            }
+        });
+    }
+
+    @Transactional
+    private void guardarLote(List<TramiteDTO> lote) {
+        List<Tramite> tramites = lote.stream()
+                .map(this::convertirDTOaEntidad)
+                .toList();
+        tramiteRepository.saveAll(tramites);
+    }
+
+    private void guardarErroresEnArchivo(Queue<String> errores) {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter("errores.log", true))) {
+            for (String error : errores) {
+                writer.write(error);
+                writer.newLine();
+            }
+        } catch (IOException e) {
+            System.err.println("Error guardando errores en archivo: " + e.getMessage());
+        }
+    }
+
 
     private TramiteDTO procesarRegistro(CSVRecord registro) {
         String numero = registro.get("numero");
