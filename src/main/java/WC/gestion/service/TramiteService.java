@@ -123,7 +123,7 @@ public class TramiteService {
 
         return tramiteDto;
     }
-
+    @Transactional
     private void procesarLoteEnHilo(List<TramiteDTO> lote, List<String> errores) {
         ExecutorService executorService = Executors.newFixedThreadPool(12); // Máximo 12 hilos
         executorService.submit(() -> {
@@ -143,7 +143,7 @@ public class TramiteService {
     }
 
 
-
+    @Transactional
     private Tramite convertirDTOaEntidad(TramiteDTO dto) {
         Tramite tramite = new Tramite();
 
