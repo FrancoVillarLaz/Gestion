@@ -20,18 +20,16 @@ import java.io.*;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
+
 import WC.gestion.persistencia.entities.*;
-import java.util.Optional;
-import java.util.Queue;
+
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static WC.gestion.util.MapUtil.*;
-
 @Service
 @RequiredArgsConstructor
 public class TramiteService {
@@ -46,26 +44,29 @@ public class TramiteService {
     @Transactional
     public void agregarTramites(List<TramiteDTO> tramitesDTO) {
         List<Tramite> tramites = tramitesDTO.stream().map(this::convertirDTOaEntidad).toList();
-        tramiteRepository.saveAll(tramites);  // Utiliza saveAll para guardar en batch
+        tramiteRepository.saveAll(tramites); // Guarda todo el lote en una sola operación
     }
 
     @Transactional
     public void agregarTramitesDesdeCsv(InputStream inputStream) throws IOException {
         List<TramiteDTO> tramitesDto = new ArrayList<>();
-        Queue<String> errores = new ConcurrentLinkedQueue<>();
-        int batchSize = 500_000;
-        ExecutorService executorService = Executors.newFixedThreadPool(12);
+        List<String> errores = new ArrayList<>();
+        int batchSize = 500_000; // Tamaño de lote
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, "UTF-8"));
              CSVParser parser = new CSVParser(reader, CSVFormat.DEFAULT.withDelimiter(';').withFirstRecordAsHeader())) {
 
             for (CSVRecord registro : parser) {
                 try {
+                    // Procesar cada registro
                     TramiteDTO tramiteDto = procesarRegistro(registro);
-                    tramitesDto.add(tramiteDto);
+                    if (tramiteDto != null) {
+                        tramitesDto.add(tramiteDto);
+                    }
 
+                    // Procesar lote si se alcanza el tamaño
                     if (tramitesDto.size() == batchSize) {
-                        enviarLoteAProcesar(tramitesDto, errores, executorService);
+                        guardarLote(tramitesDto, errores);
                         tramitesDto.clear();
                     }
                 } catch (Exception e) {
@@ -73,42 +74,31 @@ public class TramiteService {
                 }
             }
 
+            // Procesar el último lote si queda algún registro
             if (!tramitesDto.isEmpty()) {
-                enviarLoteAProcesar(tramitesDto, errores, executorService);
+                guardarLote(tramitesDto, errores);
             }
 
-            executorService.shutdown();
-            if (!executorService.awaitTermination(60, TimeUnit.MINUTES)) {
-                executorService.shutdownNow();
-            }
-
+            // Guardar errores en archivo
             if (!errores.isEmpty()) {
                 guardarErroresEnArchivo(errores);
             }
-        } catch (Exception e) {
-            throw new RuntimeException("Error procesando el archivo CSV", e);
         }
     }
 
-    private void enviarLoteAProcesar(List<TramiteDTO> lote, Queue<String> errores, ExecutorService executorService) {
-        executorService.submit(() -> {
-            try {
-                guardarLote(lote);
-            } catch (Exception e) {
-                errores.add("Error procesando lote: " + e.getMessage());
-            }
-        });
+    private void guardarLote(List<TramiteDTO> lote, List<String> errores) {
+        try {
+            List<Tramite> tramites = lote.stream()
+                    .map(this::convertirDTOaEntidad)
+                    .filter(Objects::nonNull) // Ignorar entidades nulas
+                    .toList();
+            tramiteRepository.saveAll(tramites);
+        } catch (Exception e) {
+            errores.add("Error procesando lote: " + e.getMessage());
+        }
     }
 
-    @Transactional
-    private void guardarLote(List<TramiteDTO> lote) {
-        List<Tramite> tramites = lote.stream()
-                .map(this::convertirDTOaEntidad)
-                .toList();
-        tramiteRepository.saveAll(tramites);
-    }
-
-    private void guardarErroresEnArchivo(Queue<String> errores) {
+    private void guardarErroresEnArchivo(List<String> errores) {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter("errores.log", true))) {
             for (String error : errores) {
                 writer.write(error);
@@ -119,102 +109,90 @@ public class TramiteService {
         }
     }
 
-
     private TramiteDTO procesarRegistro(CSVRecord registro) {
-        String numero = registro.get("numero");
-        if (numero == null || numero.isEmpty()) {
-            throw new IllegalArgumentException("Número vacío o nulo en la fila: " + registro.getRecordNumber());
-        }
-
-        String fecha = registro.get("fecha_portout");
-        if (fecha == null || fecha.isEmpty()) {
-            throw new IllegalArgumentException("Fecha vacía o nula en la fila: " + registro.getRecordNumber());
-        }
-
-        LocalDateTime fechaFormateada;
         try {
-            DateTimeFormatter formatoCompleto = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-            fechaFormateada = LocalDateTime.parse(fecha, formatoCompleto);
-        } catch (Exception e) {
-            DateTimeFormatter formatoSimplificado = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-            fechaFormateada = LocalDate.parse(fecha, formatoSimplificado).atStartOfDay();
-        }
-
-        String compania = registro.get("compania");
-        Integer companiaId = identificarTipoCompania(compania);
-
-        String contrato = registro.get("contrato");
-        Integer tipoContrato = identificarTipoContrato(contrato);
-
-        String tramite = registro.isMapped("tramite") ? registro.get("tramite") : "PortOut";
-        Integer tipoTramite = identificarTipoTramite(tramite);
-
-        TramiteDTO tramiteDto = new TramiteDTO();
-        tramiteDto.setClienteId(Long.parseLong(numero));
-        tramiteDto.setCompaniaId(companiaId);
-        tramiteDto.setFecha(fechaFormateada);
-        tramiteDto.setContrato(tipoContrato);
-        tramiteDto.setTipoTramiteId(tipoTramite);
-        tramiteDto.setFechaConsulta(LocalDateTime.now());
-
-        return tramiteDto;
-    }
-    @Transactional
-    private void procesarLoteEnHilo(List<TramiteDTO> lote, List<String> errores) {
-        ExecutorService executorService = Executors.newFixedThreadPool(12); // Máximo 12 hilos
-        executorService.submit(() -> {
-            try {
-                List<Tramite> tramites = lote.stream()
-                        .map(this::convertirDTOaEntidad)
-                        .toList();
-                tramiteRepository.saveAll(tramites); // Guardar lote en base de datos
-            } catch (Exception e) {
-                synchronized (errores) {
-                    errores.add("Error procesando lote: " + e.getMessage());
-                }
+            String numero = registro.get("numero");
+            if (numero == null || numero.isEmpty()) {
+                throw new IllegalArgumentException("Número vacío o nulo en la fila: " + registro.getRecordNumber());
             }
-        });
 
-        executorService.shutdown();
+            String fecha = registro.get("fecha_portout");
+            if (fecha == null || fecha.isEmpty()) {
+                throw new IllegalArgumentException("Fecha vacía o nula en la fila: " + registro.getRecordNumber());
+            }
+
+            LocalDateTime fechaFormateada;
+            try {
+                DateTimeFormatter formatoCompleto = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+                fechaFormateada = LocalDateTime.parse(fecha, formatoCompleto);
+            } catch (Exception e) {
+                DateTimeFormatter formatoSimplificado = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+                fechaFormateada = LocalDate.parse(fecha, formatoSimplificado).atStartOfDay();
+            }
+
+            String compania = registro.get("compania");
+            Integer companiaId = identificarTipoCompania(compania);
+
+            String contrato = registro.get("contrato");
+            Integer tipoContrato = identificarTipoContrato(contrato);
+
+            String tramite = registro.isMapped("tramite") ? registro.get("tramite") : "PortOut";
+            Integer tipoTramite = identificarTipoTramite(tramite);
+
+            TramiteDTO tramiteDto = new TramiteDTO();
+            tramiteDto.setClienteId(Long.parseLong(numero));
+            tramiteDto.setCompaniaId(companiaId);
+            tramiteDto.setFecha(fechaFormateada);
+            tramiteDto.setContrato(tipoContrato);
+            tramiteDto.setTipoTramiteId(tipoTramite);
+            tramiteDto.setFechaConsulta(LocalDateTime.now());
+
+            return tramiteDto;
+        } catch (Exception e) {
+            System.err.println("Error procesando registro: " + e.getMessage());
+            return null;
+        }
     }
 
-
-    @Transactional
     private Tramite convertirDTOaEntidad(TramiteDTO dto) {
-        Tramite tramite = new Tramite();
+        try {
+            Tramite tramite = new Tramite();
 
-        // Recuperar el cliente desde la base de datos usando el clienteId
-        Optional<Cliente> clienteOptional = clienteRepository.findById(dto.getClienteId());
-        if (clienteOptional.isPresent()) {
-            tramite.setCliente(clienteOptional.get());
-        } else {
-            registrarClienteNoEncontrado(dto.getClienteId()); // Registrar el cliente inexistente
-            return null; // Retornar null para ignorar este registro
+            // Recuperar el cliente desde la base de datos usando el clienteId
+            Optional<Cliente> clienteOptional = clienteRepository.findById(dto.getClienteId());
+            if (clienteOptional.isPresent()) {
+                tramite.setCliente(clienteOptional.get());
+            } else {
+                registrarClienteNoEncontrado(dto.getClienteId());
+                return null; // Retornar null si el cliente no existe
+            }
+
+            // Recuperar el tipo de tramite desde la base de datos usando el tipoTramiteId
+            Optional<TipoTramites> tipoTramiteOptional = tipoTramitesRepository.findById(dto.getTipoTramiteId());
+            tipoTramiteOptional.ifPresent(tramite::setTipoTramite);
+
+            // Recuperar la compañía desde la base de datos usando el companiaId
+            Optional<Compañias> compañiasOptional = compañiasRepository.findById(dto.getCompaniaId());
+            compañiasOptional.ifPresent(tramite::setCompania);
+
+            // Setear otros atributos del tramite
+            tramite.setFecha(dto.getFecha());
+            tramite.setFechaConsulta(dto.getFechaConsulta());
+            tramite.setContrato(dto.getContrato());
+
+            return tramite;
+        } catch (Exception e) {
+            System.err.println("Error convirtiendo DTO a entidad: " + e.getMessage());
+            return null;
         }
-
-        // Recuperar el tipo de tramite desde la base de datos usando el tipoTramiteId
-        Optional<TipoTramites> tipoTramiteOptional = tipoTramitesRepository.findById(dto.getTipoTramiteId());
-        tipoTramiteOptional.ifPresent(tramite::setTipoTramite);
-
-        // Recuperar la compañía desde la base de datos usando el companiaId
-        Optional<Compañias> compañiasOptional = compañiasRepository.findById(dto.getCompaniaId());
-        compañiasOptional.ifPresent(tramite::setCompania);
-
-        // Setear otros atributos del tramite
-        tramite.setFecha(dto.getFecha());
-        tramite.setFechaConsulta(dto.getFechaConsulta());
-        tramite.setContrato(dto.getContrato());
-
-        return tramite;
     }
+
     private void registrarClienteNoEncontrado(Long clienteId) {
-        try (FileWriter writer = new FileWriter(LOG_PATH, true); // Abrir archivo en modo append
-             BufferedWriter bufferedWriter = new BufferedWriter(writer)) {
-            bufferedWriter.write("Cliente no encontrado: " + clienteId);
-            bufferedWriter.newLine();
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(LOG_PATH, true))) {
+            writer.write("Cliente no encontrado: " + clienteId);
+            writer.newLine();
         } catch (IOException e) {
-            System.err.println("Error al registrar cliente no encontrado: " + e.getMessage());
+            System.err.println("Error registrando cliente no encontrado: " + e.getMessage());
         }
     }
-
 }
