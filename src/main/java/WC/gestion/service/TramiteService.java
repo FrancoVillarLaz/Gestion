@@ -24,6 +24,8 @@ import java.util.ArrayList;
 import java.util.List;
 import WC.gestion.persistencia.entities.*;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static WC.gestion.util.MapUtil.*;
 
@@ -46,79 +48,98 @@ public class TramiteService {
     public void agregarTramitesDesdeCsv(InputStream inputStream) throws IOException {
         List<TramiteDTO> tramitesDto = new ArrayList<>();
         List<String> errores = new ArrayList<>();
+        int batchSize = 500_000; // Tamaño de lote
 
+        // Leer el archivo CSV y dividir en lotes
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, "UTF-8"));
              CSVParser parser = new CSVParser(reader, CSVFormat.DEFAULT
                      .withDelimiter(';').withFirstRecordAsHeader())) {
 
             for (CSVRecord registro : parser) {
                 try {
-                    // Validar y obtener los datos necesarios
-                    String numero = registro.get("numero");
-                    if (numero == null || numero.isEmpty()) {
-                        throw new IllegalArgumentException("Número vacío o nulo en la fila: " + registro.getRecordNumber());
-                    }
-
-                    String fecha = registro.get("fecha_portout");
-                    if (fecha == null || fecha.isEmpty()) {
-                        throw new IllegalArgumentException("Fecha vacía o nula en la fila: " + registro.getRecordNumber());
-                    }
-
-                    LocalDateTime fechaFormateada;
-                    try {
-                        // Intentar con formato completo (con hora)
-                        DateTimeFormatter formatoCompleto = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-                        fechaFormateada = LocalDateTime.parse(fecha, formatoCompleto);
-                    } catch (Exception e) {
-                        try {
-                            // Intentar con formato simplificado (sin hora)
-                            DateTimeFormatter formatoSimplificado = DateTimeFormatter.ofPattern("yyyy-MM-dd");
-                            fechaFormateada = LocalDate.parse(fecha, formatoSimplificado).atStartOfDay();
-                        } catch (Exception e2) {
-                            throw new IllegalArgumentException("Formato de fecha inválido en la fila: " + registro.getRecordNumber() + " - Valor: " + fecha);
-                        }
-                    }
-                    LocalDateTime fechaConsulta = LocalDateTime.now();
-
-                    String compania = registro.get("compania");
-                    Integer companiaId = identificarTipoCompania(compania);
-
-                    String contrato = registro.get("contrato");
-                    Integer tipoContrato = identificarTipoContrato(contrato);
-
-                    // Manejar la columna "tramite" con un valor por defecto
-                    String tramite = registro.isMapped("tramite") ? registro.get("tramite") : "PortOut";
-                    Integer tipoTramite = identificarTipoTramite(tramite);
-
-                    // Crear el DTO
-                    TramiteDTO tramiteDto = new TramiteDTO();
-                    tramiteDto.setClienteId(Long.parseLong(numero));
-                    tramiteDto.setCompaniaId(companiaId);
-                    tramiteDto.setFecha(fechaFormateada);
-                    tramiteDto.setContrato(tipoContrato);
-                    tramiteDto.setTipoTramiteId(tipoTramite);
-                    tramiteDto.setFechaConsulta(fechaConsulta);
-
+                    // Validar y procesar cada registro
+                    TramiteDTO tramiteDto = procesarRegistro(registro);
                     tramitesDto.add(tramiteDto);
 
+                    // Si el lote alcanza el tamaño definido, procesarlo
+                    if (tramitesDto.size() == batchSize) {
+                        procesarLoteEnHilo(tramitesDto, errores);
+                        tramitesDto.clear();
+                    }
                 } catch (Exception e) {
-                    // Registrar errores en lugar de detener la ejecución
                     errores.add("Error procesando la fila: " + registro.getRecordNumber() + " - " + e.getMessage());
                 }
             }
+
+            // Procesar el último lote si no está vacío
+            if (!tramitesDto.isEmpty()) {
+                procesarLoteEnHilo(tramitesDto, errores);
+            }
         }
 
-        // Convertir DTOs a entidades y guardar
-        List<Tramite> tramites = tramitesDto.stream()
-                .map(this::convertirDTOaEntidad)
-                .toList();
-        tramiteRepository.saveAll(tramites);
-
-        // Mostrar los errores si hay alguno
+        // Mostrar errores al final
         if (!errores.isEmpty()) {
             System.out.println("Errores detectados durante la carga del CSV:");
             errores.forEach(System.out::println);
         }
+    }
+
+    private TramiteDTO procesarRegistro(CSVRecord registro) {
+        String numero = registro.get("numero");
+        if (numero == null || numero.isEmpty()) {
+            throw new IllegalArgumentException("Número vacío o nulo en la fila: " + registro.getRecordNumber());
+        }
+
+        String fecha = registro.get("fecha_portout");
+        if (fecha == null || fecha.isEmpty()) {
+            throw new IllegalArgumentException("Fecha vacía o nula en la fila: " + registro.getRecordNumber());
+        }
+
+        LocalDateTime fechaFormateada;
+        try {
+            DateTimeFormatter formatoCompleto = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+            fechaFormateada = LocalDateTime.parse(fecha, formatoCompleto);
+        } catch (Exception e) {
+            DateTimeFormatter formatoSimplificado = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+            fechaFormateada = LocalDate.parse(fecha, formatoSimplificado).atStartOfDay();
+        }
+
+        String compania = registro.get("compania");
+        Integer companiaId = identificarTipoCompania(compania);
+
+        String contrato = registro.get("contrato");
+        Integer tipoContrato = identificarTipoContrato(contrato);
+
+        String tramite = registro.isMapped("tramite") ? registro.get("tramite") : "PortOut";
+        Integer tipoTramite = identificarTipoTramite(tramite);
+
+        TramiteDTO tramiteDto = new TramiteDTO();
+        tramiteDto.setClienteId(Long.parseLong(numero));
+        tramiteDto.setCompaniaId(companiaId);
+        tramiteDto.setFecha(fechaFormateada);
+        tramiteDto.setContrato(tipoContrato);
+        tramiteDto.setTipoTramiteId(tipoTramite);
+        tramiteDto.setFechaConsulta(LocalDateTime.now());
+
+        return tramiteDto;
+    }
+
+    private void procesarLoteEnHilo(List<TramiteDTO> lote, List<String> errores) {
+        ExecutorService executorService = Executors.newFixedThreadPool(12); // Máximo 12 hilos
+        executorService.submit(() -> {
+            try {
+                List<Tramite> tramites = lote.stream()
+                        .map(this::convertirDTOaEntidad)
+                        .toList();
+                tramiteRepository.saveAll(tramites); // Guardar lote en base de datos
+            } catch (Exception e) {
+                synchronized (errores) {
+                    errores.add("Error procesando lote: " + e.getMessage());
+                }
+            }
+        });
+
+        executorService.shutdown();
     }
 
 
