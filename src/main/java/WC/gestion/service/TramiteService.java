@@ -41,6 +41,8 @@ public class TramiteService {
     private final TipoTramitesRepository tipoTramitesRepository;
     private final CompañiasRepository compañiasRepository;
 
+    private static final String LOG_PATH = "clientes_no_encontrados.log";
+
     @Transactional
     public void agregarTramites(List<TramiteDTO> tramitesDTO) {
         List<Tramite> tramites = tramitesDTO.stream().map(this::convertirDTOaEntidad).toList();
@@ -183,7 +185,12 @@ public class TramiteService {
 
         // Recuperar el cliente desde la base de datos usando el clienteId
         Optional<Cliente> clienteOptional = clienteRepository.findById(dto.getClienteId());
-        clienteOptional.ifPresent(tramite::setCliente);
+        if (clienteOptional.isPresent()) {
+            tramite.setCliente(clienteOptional.get());
+        } else {
+            registrarClienteNoEncontrado(dto.getClienteId()); // Registrar el cliente inexistente
+            return null; // Retornar null para ignorar este registro
+        }
 
         // Recuperar el tipo de tramite desde la base de datos usando el tipoTramiteId
         Optional<TipoTramites> tipoTramiteOptional = tipoTramitesRepository.findById(dto.getTipoTramiteId());
@@ -200,6 +207,14 @@ public class TramiteService {
 
         return tramite;
     }
-
+    private void registrarClienteNoEncontrado(Long clienteId) {
+        try (FileWriter writer = new FileWriter(LOG_PATH, true); // Abrir archivo en modo append
+             BufferedWriter bufferedWriter = new BufferedWriter(writer)) {
+            bufferedWriter.write("Cliente no encontrado: " + clienteId);
+            bufferedWriter.newLine();
+        } catch (IOException e) {
+            System.err.println("Error al registrar cliente no encontrado: " + e.getMessage());
+        }
+    }
 
 }
