@@ -16,7 +16,8 @@ public class MapUtil {
 
     private static final Map<String, Integer> TRAMITES = Map.ofEntries(
             Map.entry("PortOut", 1),
-            Map.entry("PortIn", 2)
+            Map.entry("PortIn", 2),
+            Map.entry("Unknow", 3)
     );
 
     private static final Map<String, Integer> COMPANIAS = Map.ofEntries(
