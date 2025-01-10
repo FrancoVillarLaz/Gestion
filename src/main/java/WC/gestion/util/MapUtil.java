@@ -11,13 +11,13 @@ public class MapUtil {
 
     private static final Map<String,Integer> CONTRATO = Map.ofEntries(
             Map.entry("Contrato CPP", 1),
-            Map.entry("Activa (Prepago)", 2)
+            Map.entry("Activa (Prepago)", 2),
+            Map.entry("Unknow", 3)
     );
 
     private static final Map<String, Integer> TRAMITES = Map.ofEntries(
             Map.entry("PortOut", 1),
-            Map.entry("PortIn", 2),
-            Map.entry("Unknow", 3)
+            Map.entry("PortIn", 2)
     );
 
     private static final Map<String, Integer> COMPANIAS = Map.ofEntries(

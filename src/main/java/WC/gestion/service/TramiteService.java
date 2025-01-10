@@ -136,7 +136,9 @@ public class TramiteService {
             String contrato = registro.get("contrato");
             Integer tipoContrato = identificarTipoContrato(contrato);
 
-            String tramite = registro.isMapped("tramite") ? registro.get("tramite") : "PortOut";
+            String tramite = registro.isMapped("tramite") && registro.get("tramite") != null && !registro.get("tramite").isEmpty()
+                    ? registro.get("tramite")
+                    : "PortOut";
             Integer tipoTramite = identificarTipoTramite(tramite);
 
             TramiteDTO tramiteDto = new TramiteDTO();
