@@ -51,7 +51,7 @@ public class LlamadasService {
                      .withFirstRecordAsHeader())) {
 
             List<LlamadasDTO> batch = new ArrayList<>();
-            int batchSize = 1000; // Número de registros por lote
+            int batchSize = 50_000; // Número de registros por lote
 
             for (CSVRecord record : csvParser) {
                 try {

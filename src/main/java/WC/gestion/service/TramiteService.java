@@ -51,14 +51,17 @@ public class TramiteService {
     public void agregarTramitesDesdeCsv(InputStream inputStream) throws IOException {
         List<TramiteDTO> tramitesDto = new ArrayList<>();
         List<String> errores = new ArrayList<>();
-        int batchSize = 500_000; // Tamaño de lote
+        int batchSize = 50_000; // Tamaño del lote
+        int threadPoolSize = Runtime.getRuntime().availableProcessors(); // Número de núcleos del procesador
+
+        // Inicializar el ExecutorService para procesamiento concurrente
+        ExecutorService executor = Executors.newFixedThreadPool(threadPoolSize);
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, "UTF-8"));
              CSVParser parser = new CSVParser(reader, CSVFormat.DEFAULT.withDelimiter(';').withFirstRecordAsHeader())) {
 
             for (CSVRecord registro : parser) {
                 try {
-                    // Procesar cada registro
                     TramiteDTO tramiteDto = procesarRegistro(registro);
                     if (tramiteDto != null) {
                         tramitesDto.add(tramiteDto);
@@ -66,7 +69,8 @@ public class TramiteService {
 
                     // Procesar lote si se alcanza el tamaño
                     if (tramitesDto.size() == batchSize) {
-                        guardarLote(tramitesDto, errores);
+                        List<TramiteDTO> loteProcesar = new ArrayList<>(tramitesDto);
+                        executor.submit(() -> guardarLote(loteProcesar, errores)); // Procesar lote en un hilo
                         tramitesDto.clear();
                     }
                 } catch (Exception e) {
@@ -74,14 +78,24 @@ public class TramiteService {
                 }
             }
 
-            // Procesar el último lote si queda algún registro
+            // Procesar el último lote
             if (!tramitesDto.isEmpty()) {
                 guardarLote(tramitesDto, errores);
             }
 
+            // Asegurarse de que todas las tareas hayan terminado
+            executor.shutdown();
+            executor.awaitTermination(1, TimeUnit.HOURS);
+
             // Guardar errores en archivo
             if (!errores.isEmpty()) {
                 guardarErroresEnArchivo(errores);
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally {
+            if (!executor.isShutdown()) {
+                executor.shutdownNow();
             }
         }
     }
@@ -90,13 +104,16 @@ public class TramiteService {
         try {
             List<Tramite> tramites = lote.stream()
                     .map(this::convertirDTOaEntidad)
-                    .filter(Objects::nonNull) // Ignorar entidades nulas
+                    .filter(Objects::nonNull)
                     .toList();
+
+            // Guardar lotes y limpiar el contexto para evitar consumo de memoria
             tramiteRepository.saveAll(tramites);
         } catch (Exception e) {
             errores.add("Error procesando lote: " + e.getMessage());
         }
     }
+
 
     private void guardarErroresEnArchivo(List<String> errores) {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter("errores.log", true))) {
