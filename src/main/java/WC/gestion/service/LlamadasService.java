@@ -132,7 +132,7 @@ public class LlamadasService {
             if (fechaStr == null || fechaStr.isEmpty()) {
                 throw new IllegalArgumentException("Fecha vacía o nula en el registro: " + record.getRecordNumber());
             }
-            LocalDateTime fecha = LocalDateTime.parse(fechaStr, DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"));
+            LocalDateTime fecha = LocalDateTime.parse(fechaStr, DateTimeFormatter.ofPattern("d/M/yyyy HH:mm:ss"));
 
             int duracion = parseIntOrDefault(record.get("Duración"), 0);
 
@@ -140,6 +140,9 @@ public class LlamadasService {
             int causaTerminacion = identificarTipoTerminacion(causaTerminacionStr);
 
             String tipoOrigenStr = record.get("Origen Corte");
+            if (tipoOrigenStr == null || tipoOrigenStr.isEmpty()){
+                throw new IllegalArgumentException("Origen de corte es nulo ");
+            }
             int tipoOrigen = identificarTipoOrigen(tipoOrigenStr);
 
             String tipoTipificacionStr = record.get("Tipificación");

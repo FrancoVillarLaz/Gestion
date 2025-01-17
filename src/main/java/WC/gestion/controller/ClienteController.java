@@ -3,6 +3,7 @@ package WC.gestion.controller;
 import WC.gestion.dto.ClienteDTO;
 import WC.gestion.persistencia.entities.Cliente;
 import WC.gestion.service.ClienteService;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
