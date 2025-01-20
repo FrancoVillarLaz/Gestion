@@ -140,6 +140,7 @@ public class LlamadasService {
             int causaTerminacion = identificarTipoTerminacion(causaTerminacionStr);
 
             String tipoOrigenStr = record.get("Origen Corte");
+            System.out.println(tipoOrigenStr);
             int tipoOrigen = identificarTipoOrigen(tipoOrigenStr);
 
             String tipoTipificacionStr = record.get("Tipificación");
