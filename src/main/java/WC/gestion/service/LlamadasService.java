@@ -16,11 +16,9 @@ import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -42,35 +40,31 @@ public class LlamadasService {
     private final TipoOrigenRepository tipoOrigenRepository;
     private final CausaTerminacionRepository causaTerminacionRepository;
 
+    private final TransactionTemplate transactionTemplate; // Para manejo manual de transacciones
 
-
-    @Transactional
     public void agregarLlamadaDesdeCsv(InputStream inputStream) throws IOException {
         List<String> errores = new ArrayList<>();
         List<LlamadasDTO> batch = new ArrayList<>();
-        int batchSize = 50_000; // Número de registros por lote
-
+        int batchSize = 50_000;
         int threadPoolSize = Runtime.getRuntime().availableProcessors();
 
         ExecutorService executor = Executors.newFixedThreadPool(threadPoolSize);
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, "UTF-8"));
              CSVParser csvParser = new CSVParser(reader, CSVFormat.DEFAULT
-                     .withDelimiter(';') // Separador
+                     .withDelimiter(';')
                      .withFirstRecordAsHeader())) {
-
 
             for (CSVRecord record : csvParser) {
                 try {
-                    // Crear y validar el DTO
                     LlamadasDTO llamadasDTO = crearLlamadaDTO(record);
-                    if (llamadasDTO != null){
-                    batch.add(llamadasDTO);
+                    if (llamadasDTO != null) {
+                        batch.add(llamadasDTO);
                     }
-                    // Guardar cuando el lote alcance el tamaño definido
+
                     if (batch.size() == batchSize) {
                         List<LlamadasDTO> loteProcesar = new ArrayList<>(batch);
-                        executor.submit(() -> guardarLote(loteProcesar, errores));
+                        executor.submit(() -> guardarLoteConTransaccion(loteProcesar, errores));
                         batch.clear();
                     }
                 } catch (Exception e) {
@@ -78,50 +72,56 @@ public class LlamadasService {
                 }
             }
 
-            // Guardar el último lote
             if (!batch.isEmpty()) {
-                guardarLote(batch, errores);
+                guardarLoteConTransaccion(batch, errores);
             }
 
             executor.shutdown();
             executor.awaitTermination(1, TimeUnit.HOURS);
 
-
             if (!errores.isEmpty()) {
-                System.out.println("Errores detectados:");
-                errores.forEach(System.out::println);
+                registrarErrores(errores);
             }
-        }catch (InterruptedException e) {
-            throw new RuntimeException(e);
 
-        }finally {
+        } catch (InterruptedException e) {
+            throw new RuntimeException("Error esperando la finalización de las tareas", e);
+        } finally {
             if (!executor.isShutdown()) {
                 executor.shutdown();
             }
         }
-
-
     }
 
+    private void guardarLoteConTransaccion(List<LlamadasDTO> batch, List<String> errores) {
+        transactionTemplate.execute(status -> {
+            try {
+                List<Llamadas> llamadas = batch.stream()
+                        .map(this::convertDtoaEntidad)
+                        .toList();
 
-    public void guardarLote(List<LlamadasDTO> batch, List<String> errores) {
+                llamadasRepository.saveAll(llamadas); // Guardar el lote
+            } catch (Exception e) {
+                errores.add("Error procesando lote: " + e.getMessage());
+                System.err.println("Error procesando lote: " + e.getMessage());
+                status.setRollbackOnly(); // Marcar la transacción para rollback
+            }
+            return null;
+        });
+    }
 
-        try {
-            List<Llamadas> llamadas = batch.stream()
-                    .map(this::convertDtoaEntidad)
-                    .toList();
-            llamadasRepository.saveAll(llamadas);
-
-        } catch (Exception e) {
-            errores.add("Error procesando lote : " + e.getMessage());
+    private void registrarErrores(List<String> errores) {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter("errores_llamadas.log", true))) {
+            for (String error : errores) {
+                writer.write(error);
+                writer.newLine();
+            }
+        } catch (IOException e) {
+            System.err.println("Error al registrar errores: " + e.getMessage());
         }
     }
 
-
     private LlamadasDTO crearLlamadaDTO(CSVRecord record) {
-
         try {
-            // Validación y conversión de datos del CSV al DTO
             String numeroCon15 = record.get("Cliente");
             if (numeroCon15 == null || numeroCon15.isEmpty()) {
                 throw new IllegalArgumentException("Número vacío o nulo en el registro: " + record.getRecordNumber());
@@ -140,15 +140,11 @@ public class LlamadasService {
             int causaTerminacion = identificarTipoTerminacion(causaTerminacionStr);
 
             String tipoOrigenStr = record.get("Origen Corte");
-            if (tipoOrigenStr == null || tipoOrigenStr.isEmpty()){
-                throw new IllegalArgumentException("Origen de corte es nulo ");
-            }
             int tipoOrigen = identificarTipoOrigen(tipoOrigenStr);
 
             String tipoTipificacionStr = record.get("Tipificación");
             int tipoTipificacion = identificarTipoTipificacion(tipoTipificacionStr);
 
-            // Creación del DTO
             LlamadasDTO llamadasDTO = new LlamadasDTO();
             llamadasDTO.setNumero(numero);
             llamadasDTO.setFecha(fecha);
@@ -162,40 +158,30 @@ public class LlamadasService {
             System.err.println("Error procesando llamada: " + e.getMessage());
             return null;
         }
-
     }
-
 
     private Llamadas convertDtoaEntidad(LlamadasDTO llamadasDTO) {
         Llamadas llamadas = new Llamadas();
 
-        // Buscar y asignar el cliente relacionado
         Cliente cliente = clienteRepository.findById(llamadasDTO.getNumero())
                 .orElseThrow(() -> new IllegalArgumentException("Cliente no encontrado con número: " + llamadasDTO.getNumero()));
         llamadas.setCliente(cliente);
 
-        // Buscar y asignar el tipo de tipificación
         TipoTipificacion tipificacion = tipoTipificacionRepository.findById(llamadasDTO.getTipoTipificacion())
                 .orElseThrow(() -> new IllegalArgumentException("Tipificación no encontrada con ID: " + llamadasDTO.getTipoTipificacion()));
         llamadas.setTipoTipificacion(tipificacion);
 
-        // Buscar y asignar el tipo de origen
         TipoOrigen tipoOrigen = tipoOrigenRepository.findById(llamadasDTO.getTipoOrigen())
                 .orElseThrow(() -> new IllegalArgumentException("Origen no encontrado con ID: " + llamadasDTO.getTipoOrigen()));
         llamadas.setTipoOrigen(tipoOrigen);
 
-        // Buscar y asignar la causa de terminación
         CausaTerminacion causaTerminacion = causaTerminacionRepository.findById(llamadasDTO.getCausaTerminacion())
                 .orElseThrow(() -> new IllegalArgumentException("Causa de terminación no encontrada con ID: " + llamadasDTO.getCausaTerminacion()));
         llamadas.setCausaTerminacion(causaTerminacion);
 
-        // Asignar atributos directos
-        llamadas.setFecha(Timestamp.valueOf(llamadasDTO.getFecha())); // Convertir LocalDateTime a Timestamp
+        llamadas.setFecha(Timestamp.valueOf(llamadasDTO.getFecha()));
         llamadas.setDuracion(llamadasDTO.getDuracion());
 
         return llamadas;
     }
-
-
-
 }
