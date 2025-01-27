@@ -24,6 +24,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -34,18 +36,18 @@ import static WC.gestion.util.NumberUtil.*;
 @Service
 @RequiredArgsConstructor
 public class LlamadasService {
+
     private final LlamadasRepository llamadasRepository;
     private final ClienteRepository clienteRepository;
     private final TipoTipificacionRepository tipoTipificacionRepository;
     private final TipoOrigenRepository tipoOrigenRepository;
     private final CausaTerminacionRepository causaTerminacionRepository;
-
     private final TransactionTemplate transactionTemplate; // Para manejo manual de transacciones
 
     public void agregarLlamadaDesdeCsv(InputStream inputStream) throws IOException {
-        List<String> errores = new ArrayList<>();
+        Queue<String> errores = new ConcurrentLinkedQueue<>(); // Manejo concurrente de errores
         List<LlamadasDTO> batch = new ArrayList<>();
-        int batchSize = 50_000;
+        int batchSize = 10_000; // Tamaño del lote ajustado
         int threadPoolSize = Runtime.getRuntime().availableProcessors();
 
         ExecutorService executor = Executors.newFixedThreadPool(threadPoolSize);
@@ -57,14 +59,14 @@ public class LlamadasService {
 
             for (CSVRecord record : csvParser) {
                 try {
-                    LlamadasDTO llamadasDTO = crearLlamadaDTO(record);
+                    LlamadasDTO llamadasDTO = crearLlamadaDTO(record); // Crear la entidad DTO
                     if (llamadasDTO != null) {
                         batch.add(llamadasDTO);
                     }
 
+                    // Procesar el lote cuando alcance el tamaño máximo
                     if (batch.size() == batchSize) {
-                        List<LlamadasDTO> loteProcesar = new ArrayList<>(batch);
-                        executor.submit(() -> guardarLoteConTransaccion(loteProcesar, errores));
+                        procesarLote(batch, executor, errores);
                         batch.clear();
                     }
                 } catch (Exception e) {
@@ -72,44 +74,73 @@ public class LlamadasService {
                 }
             }
 
+            // Procesar cualquier lote restante
             if (!batch.isEmpty()) {
-                guardarLoteConTransaccion(batch, errores);
+                procesarLote(batch, executor, errores);
             }
 
-            executor.shutdown();
-            executor.awaitTermination(1, TimeUnit.HOURS);
+            // Finalizar las tareas y manejar executor
+            cerrarExecutor(executor);
 
+            // Registrar errores si existen
             if (!errores.isEmpty()) {
                 registrarErrores(errores);
             }
 
-        } catch (InterruptedException e) {
-            throw new RuntimeException("Error esperando la finalización de las tareas", e);
-        } finally {
-            if (!executor.isShutdown()) {
-                executor.shutdown();
-            }
+        } catch (IOException e) {
+            throw new RuntimeException("Error al procesar el archivo CSV", e);
         }
     }
 
-    private void guardarLoteConTransaccion(List<LlamadasDTO> batch, List<String> errores) {
+    private void procesarLote(List<LlamadasDTO> batch, ExecutorService executor, Queue<String> errores) {
+        List<LlamadasDTO> loteProcesar = new ArrayList<>(batch);
+
+        executor.submit(() -> {
+            // Procesar cada registro individualmente para manejar errores sin afectar al lote completo
+            List<Llamadas> llamadasValidas = new ArrayList<>();
+
+            for (LlamadasDTO dto : loteProcesar) {
+                try {
+                    Llamadas llamada = convertDtoaEntidad(dto);
+                    llamadasValidas.add(llamada); // Agregar llamadas válidas
+                } catch (Exception e) {
+                    // Registrar errores a nivel de registro individual
+                    errores.add("Error procesando registro DTO: " + dto + " - Causa: " + e.getMessage());
+                }
+            }
+
+            // Guardar todas las llamadas válidas en la base de datos (si hay)
+            if (!llamadasValidas.isEmpty()) {
+                guardarConTransaccion(llamadasValidas);
+            }
+        });
+    }
+
+    private void guardarConTransaccion(List<Llamadas> llamadasValidas) {
         transactionTemplate.execute(status -> {
             try {
-                List<Llamadas> llamadas = batch.stream()
-                        .map(this::convertDtoaEntidad)
-                        .toList();
-
-                llamadasRepository.saveAll(llamadas); // Guardar el lote
+                llamadasRepository.saveAll(llamadasValidas); // Guardar el lote en la base de datos
             } catch (Exception e) {
-                errores.add("Error procesando lote: " + e.getMessage());
-                System.err.println("Error procesando lote: " + e.getMessage());
-                status.setRollbackOnly(); // Marcar la transacción para rollback
+                System.err.println("Error al guardar lote válido: " + e.getMessage());
+                status.setRollbackOnly(); // Rollback si ocurre un error en el guardado
             }
             return null;
         });
     }
 
-    private void registrarErrores(List<String> errores) {
+    private void cerrarExecutor(ExecutorService executor) {
+        executor.shutdown(); // Iniciar cierre del executor
+        try {
+            if (!executor.awaitTermination(1, TimeUnit.HOURS)) {
+                executor.shutdownNow(); // Forzar cierre si excedió el tiempo límite
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow(); // Cierre inmediato en caso de interrupción
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void registrarErrores(Queue<String> errores) {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter("errores_llamadas.log", true))) {
             for (String error : errores) {
                 writer.write(error);
@@ -122,30 +153,35 @@ public class LlamadasService {
 
     private LlamadasDTO crearLlamadaDTO(CSVRecord record) {
         try {
+            // Leer y validar Cliente
             String numeroCon15 = record.get("Cliente");
             if (numeroCon15 == null || numeroCon15.isEmpty()) {
                 throw new IllegalArgumentException("Número vacío o nulo en el registro: " + record.getRecordNumber());
             }
             long numero = parseLongOrDefault(saca15(numeroCon15), null);
 
+            // Leer y validar Fecha
             String fechaStr = record.get("Inicio");
             if (fechaStr == null || fechaStr.isEmpty()) {
                 throw new IllegalArgumentException("Fecha vacía o nula en el registro: " + record.getRecordNumber());
             }
+            // Asegurar formato correcto de fecha (día/mes/año hora:minuto:segundo)
             LocalDateTime fecha = LocalDateTime.parse(fechaStr, DateTimeFormatter.ofPattern("d/M/yyyy HH:mm:ss"));
 
+            // Leer y validar Duración
             int duracion = parseIntOrDefault(record.get("Duración"), 0);
 
+            // Leer y validar otros campos importantes
             String causaTerminacionStr = record.get("Causa Terminación");
             int causaTerminacion = identificarTipoTerminacion(causaTerminacionStr);
 
             String tipoOrigenStr = record.get("Origen Corte");
-            System.out.println(tipoOrigenStr);
             int tipoOrigen = identificarTipoOrigen(tipoOrigenStr);
 
             String tipoTipificacionStr = record.get("Tipificación");
             int tipoTipificacion = identificarTipoTipificacion(tipoTipificacionStr);
 
+            // Crear DTO con datos relevantes
             LlamadasDTO llamadasDTO = new LlamadasDTO();
             llamadasDTO.setNumero(numero);
             llamadasDTO.setFecha(fecha);
@@ -164,22 +200,27 @@ public class LlamadasService {
     private Llamadas convertDtoaEntidad(LlamadasDTO llamadasDTO) {
         Llamadas llamadas = new Llamadas();
 
+        // Validar Cliente
         Cliente cliente = clienteRepository.findById(llamadasDTO.getNumero())
-                .orElseThrow(() -> new IllegalArgumentException("Cliente no encontrado con número: " + llamadasDTO.getNumero()));
+                .orElseThrow(() -> new IllegalArgumentException("Cliente no encontrado para el número: " + llamadasDTO.getNumero()));
         llamadas.setCliente(cliente);
 
+        // Validar Tipificación
         TipoTipificacion tipificacion = tipoTipificacionRepository.findById(llamadasDTO.getTipoTipificacion())
-                .orElseThrow(() -> new IllegalArgumentException("Tipificación no encontrada con ID: " + llamadasDTO.getTipoTipificacion()));
+                .orElseThrow(() -> new IllegalArgumentException("TipoTipificacion no encontrado para el ID: " + llamadasDTO.getTipoTipificacion()));
         llamadas.setTipoTipificacion(tipificacion);
 
+        // Validar Origen
         TipoOrigen tipoOrigen = tipoOrigenRepository.findById(llamadasDTO.getTipoOrigen())
-                .orElseThrow(() -> new IllegalArgumentException("Origen no encontrado con ID: " + llamadasDTO.getTipoOrigen()));
+                .orElseThrow(() -> new IllegalArgumentException("TipoOrigen no encontrado para el ID: " + llamadasDTO.getTipoOrigen()));
         llamadas.setTipoOrigen(tipoOrigen);
 
+        // Validar Causa de Terminación
         CausaTerminacion causaTerminacion = causaTerminacionRepository.findById(llamadasDTO.getCausaTerminacion())
-                .orElseThrow(() -> new IllegalArgumentException("Causa de terminación no encontrada con ID: " + llamadasDTO.getCausaTerminacion()));
+                .orElseThrow(() -> new IllegalArgumentException("CausaTerminacion no encontrada para el ID: " + llamadasDTO.getCausaTerminacion()));
         llamadas.setCausaTerminacion(causaTerminacion);
 
+        // Asignar fecha y duración
         llamadas.setFecha(Timestamp.valueOf(llamadasDTO.getFecha()));
         llamadas.setDuracion(llamadasDTO.getDuracion());
 
