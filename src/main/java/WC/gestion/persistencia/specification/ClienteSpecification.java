@@ -1,57 +1,78 @@
 package WC.gestion.persistencia.specification;
 
 import WC.gestion.persistencia.entities.Cliente;
+import WC.gestion.persistencia.entities.Llamadas;
+import WC.gestion.persistencia.entities.Tramite;
+import WC.gestion.util.MapUtil;
+import WC.gestion.util.DocumentoUtil;
+import jakarta.persistence.criteria.JoinType;
 import jakarta.persistence.criteria.Predicate;
 import org.springframework.data.jpa.domain.Specification;
 
-import java.sql.Date;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 
-import WC.gestion.persistencia.entities.Tramite;
 import jakarta.persistence.criteria.Join;
 
 public class ClienteSpecification {
     public static Specification<Cliente> getClientesEspecificacion(
-            List<String> companias, String contrato, String tipoDocumento, boolean noEsCUIT,
-            String tipificacion, Date fechaPortoutInicio, Date fechaPortoutFin
+            List<Integer> companias, Integer contrato, String tipoDocumento, boolean noEsCUIT,
+            Integer tipificacion, Timestamp fechaLlamadaInicio, Timestamp fechaLlamadaFin,
+            Integer duracionMinima, Integer duracionMaxima, Integer causaTerminacion
     ) {
         return (root, query, builder) -> {
             List<Predicate> predicates = new ArrayList<>();
 
-            // Unir la tabla de tramites
-            Join<Cliente, Tramite> tramiteJoin = root.join("tramites");
+            // JOIN con trámites y llamadas
+            Join<Cliente, Tramite> tramiteJoin = root.join("tramites", JoinType.LEFT);
+            Join<Cliente, Llamadas> llamadasJoin = root.join("llamadas", JoinType.LEFT);
 
-            // Filtrar por compañías de los trámites
+            // Filtrar por compañías de trámites
             if (companias != null && !companias.isEmpty()) {
-                predicates.add(tramiteJoin.get("compania").in(companias));
+                predicates.add(tramiteJoin.get("compania_id").in(companias));
             }
 
-            // Filtrar por contrato de los trámites
+            // Filtrar por contrato
             if (contrato != null) {
-                predicates.add(builder.equal(tramiteJoin.get("contrato"), contrato));
+                predicates.add(builder.equal(tramiteJoin.get("contrato_id"), contrato));
             }
 
-            // Filtrar por tipo de documento (ej. DNI, CUIT)
+            // Filtrar por tipo de documento
             if (tipoDocumento != null) {
                 if (noEsCUIT) {
-                    predicates.add(builder.notLike(root.get("tipoDocumento").get("tipoDocumento"), "%CUIT%"));
+                    predicates.add(builder.notEqual(root.get("tipo_documento"), "CUIT"));
                 } else {
-                    predicates.add(builder.like(root.get("tipoDocumento").get("tipoDocumento"), "%" + tipoDocumento + "%"));
+                    predicates.add(builder.equal(root.get("tipo_documento"), tipoDocumento));
                 }
             }
 
-            // Filtrar por tipificación que no sea "venta"
-            if (tipificacion != null && !tipificacion.equalsIgnoreCase("venta")) {
-                predicates.add(builder.notEqual(tramiteJoin.get("tipo"), "venta"));
+            // Filtrar por tipificación de llamadas
+            if (tipificacion != null) {
+                predicates.add(builder.equal(llamadasJoin.get("tipificacion"), tipificacion));
             }
 
-            // Filtrar por fecha de portout (basado en la fecha del trámite)
-            if (fechaPortoutInicio != null && fechaPortoutFin != null) {
-                predicates.add(builder.between(tramiteJoin.get("fecha"), fechaPortoutInicio, fechaPortoutFin));
+            // Filtrar por rango de fechas de llamadas
+            if (fechaLlamadaInicio != null && fechaLlamadaFin != null) {
+                predicates.add(builder.between(llamadasJoin.get("fecha"), fechaLlamadaInicio, fechaLlamadaFin));
+            }
+
+            // Filtrar por duración de llamadas
+            if (duracionMinima != null) {
+                predicates.add(builder.greaterThanOrEqualTo(llamadasJoin.get("duracion"), duracionMinima));
+            }
+            if (duracionMaxima != null) {
+                predicates.add(builder.lessThanOrEqualTo(llamadasJoin.get("duracion"), duracionMaxima));
+            }
+
+            // Filtrar por causa de terminación
+            if (causaTerminacion != null) {
+                predicates.add(builder.equal(llamadasJoin.get("causa_terminacion"), causaTerminacion));
             }
 
             return builder.and(predicates.toArray(new Predicate[0]));
         };
     }
 }
+
+

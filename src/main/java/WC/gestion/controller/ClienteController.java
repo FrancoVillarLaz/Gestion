@@ -11,6 +11,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.sql.Date;
+import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -60,20 +61,27 @@ public class ClienteController {
     }
 
 
-    @GetMapping("/filtro")
-    public List<Cliente> obtenerClientes(
+    @GetMapping("/filtrar")
+    public ResponseEntity<List<Cliente>> filtrarClientes(
             @RequestParam(required = false) List<String> companias,
             @RequestParam(required = false) String contrato,
             @RequestParam(required = false) String tipoDocumento,
-            @RequestParam(defaultValue = "true") boolean noEsCUIT,
+            @RequestParam(defaultValue = "false") boolean noEsCUIT,
             @RequestParam(required = false) String tipificacion,
-            @RequestParam(required = false) Date fechaPortoutInicio,
-            @RequestParam(required = false) Date fechaPortoutFin,
-            @RequestParam(defaultValue = "100") int cantidadMaxima
+            @RequestParam(required = false) Timestamp fechaLlamadaInicio,
+            @RequestParam(required = false) Timestamp fechaLlamadaFin,
+            @RequestParam(required = false) Integer duracionMinima,
+            @RequestParam(required = false) Integer duracionMaxima,
+            @RequestParam(required = false) String causaTerminacion
     ) {
-        return clienteService.obtenerClientesFiltrados(
-                companias, contrato, tipoDocumento, noEsCUIT,
-                tipificacion, fechaPortoutInicio, fechaPortoutFin, cantidadMaxima
-        );
+        try {
+            List<Cliente> clientes = clienteService.filtrarClientes(
+                    companias, contrato, tipoDocumento, noEsCUIT, tipificacion,
+                    fechaLlamadaInicio, fechaLlamadaFin, duracionMinima, duracionMaxima, causaTerminacion
+            );
+            return ResponseEntity.ok(clientes);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(null);
+        }
     }
 }

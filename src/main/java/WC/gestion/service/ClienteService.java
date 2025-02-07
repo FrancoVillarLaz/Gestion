@@ -6,6 +6,7 @@ import WC.gestion.persistencia.entities.TipoDocumento;
 import WC.gestion.persistencia.specification.ClienteSpecification;
 import WC.gestion.repositories.ClienteRepository;
 import WC.gestion.repositories.TipoDocumentoRepository;
+import WC.gestion.util.MapUtil;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +25,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.sql.Date;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -49,15 +51,31 @@ public class ClienteService {
         return clienteRepository.findAll();
     }
 
-    public List<Cliente> obtenerClientesFiltrados(
+    public List<Cliente> filtrarClientes(
             List<String> companias, String contrato, String tipoDocumento, boolean noEsCUIT,
-            String tipificacion, Date fechaPortoutInicio, Date fechaPortoutFin, int cantidadMaxima
-    ) {
-        Specification<Cliente> specification = ClienteSpecification.getClientesEspecificacion(
-                companias, contrato, tipoDocumento, noEsCUIT, tipificacion, fechaPortoutInicio, fechaPortoutFin
+            String tipificacion, Timestamp fechaLlamadaInicio, Timestamp fechaLlamadaFin,
+            Integer duracionMinima, Integer duracionMaxima, String causaTerminacion) {
+
+        // Convertir nombres a IDs utilizando MapUtil
+        List<Integer> companiasIds = null;
+        if (companias != null) {
+            companiasIds = companias.stream()
+                    .map(MapUtil::identificarTipoCompania)
+                    .toList();
+        }
+
+        Integer contratoId = contrato != null ? MapUtil.identificarTipoContrato(contrato) : null;
+        Integer tipificacionId = tipificacion != null ? MapUtil.identificarTipoTipificacion(tipificacion) : null;
+        Integer causaTerminacionId = causaTerminacion != null ? MapUtil.identificarTipoTerminacion(causaTerminacion) : null;
+
+        // Crear la Specification
+        Specification<Cliente> spec = ClienteSpecification.getClientesEspecificacion(
+                companiasIds, contratoId, tipoDocumento, noEsCUIT, tipificacionId,
+                fechaLlamadaInicio, fechaLlamadaFin, duracionMinima, duracionMaxima, causaTerminacionId
         );
 
-        return clienteRepository.findAll(specification, PageRequest.of(0, cantidadMaxima)).getContent();
+        // Consultar en el repositorio
+        return clienteRepository.findAll(spec);
     }
 
     @Transactional
