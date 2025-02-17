@@ -41,4 +41,9 @@ public class Llamadas {
     @JoinColumn(name = "causa_terminacion")
     @JsonManagedReference
     private CausaTerminacion causaTerminacion;
+
+    @ManyToOne
+    @JoinColumn(name = "agente")
+    @JsonManagedReference
+    private Agentes agente;
 }
